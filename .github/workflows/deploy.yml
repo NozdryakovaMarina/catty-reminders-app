@@ -1,38 +1,81 @@
-name: CD
+name: CD - Deploy on Release
 
 on:
   release:
     types: [published]
 
+permissions:
+  contents: read
+  packages: read
+
+env:
+  PROXY: ${{ secrets.SSH_HOST }}
+  ID: ${{ secrets.APP_ID }}
+  SSH_PORT: ${{ secrets.SSH_PORT }}
+  SSH_USER: ${{ secrets.SSH_USERNAME }}
+  APP_PORT: ${{ secrets.APP_PORT || '8181' }}
+  IMAGE: ${{ secrets.DOCKER_IMAGE }}
+  HEALTH_URL: http://app.${{ secrets.APP_ID }}.${{ secrets.SSH_HOST }}/
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
+
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Setup SSH key
-      run: |
-        mkdir -p ~/.ssh
-        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/vm_key
-        chmod 600 ~/.ssh/vm_key
+      - name: Checkout (optional)
+        uses: actions/checkout@v4
+
+      - name: Prepare SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/vm_key
+          chmod 600 ~/.ssh/vm_key
+          ssh-keyscan -p "${SSH_PORT}" "${PROXY}" >> ~/.ssh/known_hosts
+
+      - name: Deploy on VM via SSH
+        run: |
+          ssh -i ~/.ssh/vm_key -p "${SSH_PORT}" -o BatchMode=yes "${SSH_USER}@${PROXY}" \
+            "IMAGE='${IMAGE}' APP_PORT='${APP_PORT}' bash -s" <<'EOSSH'
+          set -euo pipefail
         
-    - name: Deploy to VM
-      run: |
-        echo "Starting deployment..."
-        ssh -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=15 \
-            -i ~/.ssh/vm_key \
-            -p ${{ secrets.SSH_PORT }} \
-            ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} "
-          cd ${{ secrets.APP_PATH }}
-          echo 'Pulling latest code...'
-          git pull origin github-actions
-          echo 'Installing dependencies...'
-          pip install -r requirements.txt
-          echo 'Restarting service...'
-          sudo systemctl restart catty-reminders
-          echo 'Deployment completed!'
-          echo 'Application: http://app.${{ secrets.APP_ID }}.${{ secrets.PROXY_DOMAIN }}'
-        "
+          echo "Docker login to GHCR..."
+          echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+        
+          echo "Pull image: ${IMAGE}"
+          docker pull "${IMAGE}"
+        
+          echo "Stop old container (if exists)..."
+          docker stop reminders-container || true
+          docker rm reminders-container || true
+        
+          echo "Run new container..."
+          docker run -d \
+            --name reminders-container \
+            --restart unless-stopped \
+            -p ${APP_PORT}:${APP_PORT} \
+            "${IMAGE}"
+        
+          echo "Prune old images..."
+          docker image prune -f || true
+        
+          echo "Container status:"
+          docker ps --filter "name=reminders-container"
+          EOSSH
+
+
+      - name: Healthcheck
+        run: |
+          echo "Check ${HEALTH_URL}"
+          for i in {1..12}; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "${HEALTH_URL}" || true)
+            if [ "$code" = "200" ] || [ "$code" = "302" ]; then
+              echo "OK ($code)"
+              exit 0
+            fi
+            echo "Waiting ($i)... got $code"; sleep 5
+          done
+          echo "Healthcheck failed"; exit 1
