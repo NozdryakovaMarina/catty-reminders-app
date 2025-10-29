@@ -2,7 +2,7 @@ name: Docker CI
 
 on:
   push:
-    branches: [ github-actions-docker, master ]
+    branches: [ github-action-docker, master ]
 
 permissions:
   contents: read
@@ -60,7 +60,7 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/github-actions-docker'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/github-action-docker'
     
     steps:
     - name: Checkout code
