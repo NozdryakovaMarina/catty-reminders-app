@@ -2,7 +2,7 @@ name: Docker CI
 
 on:
   push:
-    branches: [ github-actions-docker ]
+    branches: [ github-actions-docker, master ]
 
 permissions:
   contents: read
