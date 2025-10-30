@@ -4,12 +4,6 @@ on:
   push:
     branches: [ github-actions ]
 
-permissions:
-  contents: read
-  packages: write
-  attestations: write
-  id-token: write
-
 jobs:
   test:
     runs-on: ubuntu-latest
